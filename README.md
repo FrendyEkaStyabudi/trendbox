@@ -223,6 +223,137 @@ npm.cmd run start
 
 Direktori frontend dan masing-masing API juga menyediakan Dockerfile untuk deployment menggunakan container. Pada Google Cloud, simpan kredensial di Secret Manager dan hubungkan Cloud SQL ke service Cloud Run terkait. Jangan menyimpan kredensial di dalam repositori.
 
+## Deployment ke Google Cloud
+
+Konfigurasi production Trendbox saat ini menggunakan:
+
+| Resource | Nilai |
+| --- | --- |
+| Project ID | `trendbox-2026` |
+| Region | `asia-southeast2` |
+| Cloud SQL | `trendbox-2026:asia-southeast2:trendbox-mysql` |
+| Service account | `trendbox-cloud-run@trendbox-2026.iam.gserviceaccount.com` |
+
+### 1. Siapkan kode production
+
+Gabungkan perubahan dari `development` ke `master` melalui Pull Request. Setelah proses merge selesai, perbarui kode lokal:
+
+```bat
+cd C:\Trendbox
+git switch master
+git pull origin master
+git status
+```
+
+Pastikan tidak ada perubahan yang belum di-commit dan tidak ada kredensial yang tertulis langsung di dalam kode.
+
+### 2. Konfigurasi Google Cloud CLI
+
+```bat
+gcloud auth login
+gcloud config set project trendbox-2026
+gcloud config set run/region asia-southeast2
+gcloud config list
+```
+
+Aktifkan API yang diperlukan:
+
+```bat
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com sqladmin.googleapis.com secretmanager.googleapis.com
+```
+
+Periksa secret yang tersedia tanpa menampilkan nilainya:
+
+```bat
+gcloud secrets list
+gcloud secrets describe trendbox-db-password
+```
+
+Password database dan API key harus berasal dari Secret Manager. Jangan menuliskan nilainya pada perintah deployment, Dockerfile, atau file yang masuk ke Git.
+
+### 3. Uji frontend sebelum deployment
+
+```bat
+cd C:\Trendbox\Frontend
+npm.cmd ci
+npm.cmd exec tsc -- --noEmit
+npm.cmd run build
+```
+
+Lanjutkan apabila proses build menampilkan `Compiled successfully`.
+
+### 4. Deploy Dashboard API
+
+Jalankan langkah ini hanya jika kode Dashboard atau Forecasting API berubah:
+
+```bat
+cd C:\Trendbox\Backend\DMPKENV-main
+gcloud run deploy trendbox-dashboard-api --source . --region asia-southeast2 --allow-unauthenticated --service-account trendbox-cloud-run@trendbox-2026.iam.gserviceaccount.com --add-cloudsql-instances trendbox-2026:asia-southeast2:trendbox-mysql
+```
+
+Uji service:
+
+```bat
+curl.exe https://trendbox-dashboard-api-590242083739.asia-southeast2.run.app/health
+curl.exe https://trendbox-dashboard-api-590242083739.asia-southeast2.run.app/api/summary
+```
+
+### 5. Deploy Reports API
+
+Jalankan langkah ini hanya jika kode Insights atau Reports API berubah:
+
+```bat
+cd C:\Trendbox\Backend\REPORTENV-main
+gcloud run deploy trendbox-reports-api --source . --region asia-southeast2 --allow-unauthenticated --service-account trendbox-cloud-run@trendbox-2026.iam.gserviceaccount.com --add-cloudsql-instances trendbox-2026:asia-southeast2:trendbox-mysql
+```
+
+Uji service:
+
+```bat
+curl.exe https://trendbox-reports-api-590242083739.asia-southeast2.run.app/health
+curl.exe "https://trendbox-reports-api-590242083739.asia-southeast2.run.app/api/distribution?range=today"
+```
+
+### 6. Deploy NLP API
+
+```bat
+cd C:\Trendbox\Backend\API-NLP-CHATBOT-QUERY-GENERATOR-main
+gcloud run deploy trendbox-nlp-api --source . --region asia-southeast2 --allow-unauthenticated --service-account trendbox-cloud-run@trendbox-2026.iam.gserviceaccount.com --add-cloudsql-instances trendbox-2026:asia-southeast2:trendbox-mysql
+```
+
+Uji service dan pastikan API key terdeteksi tanpa menampilkan nilainya:
+
+```bat
+curl.exe https://trendbox-nlp-api-590242083739.asia-southeast2.run.app/health
+curl.exe https://trendbox-nlp-api-590242083739.asia-southeast2.run.app/api/settings
+```
+
+### 7. Deploy frontend
+
+Pastikan [`.env.production`](Frontend/.env.production) telah mengarah ke URL API Cloud Run dan bucket model yang benar, kemudian jalankan:
+
+```bat
+cd C:\Trendbox\Frontend
+gcloud run deploy trendbox-web --source . --region asia-southeast2 --allow-unauthenticated
+```
+
+Buka aplikasi production:
+
+<https://trendbox-web-590242083739.asia-southeast2.run.app/>
+
+Lakukan hard refresh dengan `Ctrl + F5`, kemudian periksa Dashboard, Forecasting, Real-time Tracking, NLP Assistant, serta Insights & Reports.
+
+### 8. Periksa revision Cloud Run
+
+```bat
+gcloud run revisions list --service trendbox-dashboard-api --region asia-southeast2
+gcloud run revisions list --service trendbox-reports-api --region asia-southeast2
+gcloud run revisions list --service trendbox-nlp-api --region asia-southeast2
+gcloud run revisions list --service trendbox-web --region asia-southeast2
+```
+
+Deploy hanya service yang kodenya berubah. Setiap deployment Cloud Run akan membuat revision baru, sehingga Cloud SQL, database, dan data yang sudah ada tidak perlu dibuat ulang.
+
 ## Pemeriksaan Service
 
 Setelah menjalankan backend, periksa status setiap service:
