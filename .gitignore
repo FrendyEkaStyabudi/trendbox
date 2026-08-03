@@ -3,6 +3,8 @@
 !**/.env.example
 !Frontend/.env.production
 !Frontend/.env.local.example
+**/.venv/
+**/venv/
 .tools/
 **/__pycache__/
 **/*.py[cod]
