@@ -38,7 +38,7 @@ export default function DashboardLayout({
   ]
 
   return (
-    <div className="flex min-h-screen w-full overflow-x-hidden bg-background">
+    <div className="flex h-svh w-full overflow-hidden bg-background">
       <Sidebar>
         <SidebarHeader className="flex-col space-y-2 px-4 py-2">
           <div className="flex items-center space-x-3">
@@ -72,7 +72,7 @@ export default function DashboardLayout({
 
       </Sidebar>
 
-      <main className="flex min-h-screen min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="flex h-svh min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* ... sisa kode tidak berubah ... */}
         <div className="flex min-w-0 items-center justify-between gap-3 border-b p-3 sm:p-4">
           <div className="flex min-w-0 items-center">
@@ -89,7 +89,13 @@ export default function DashboardLayout({
           </div>
         </div>
 
-        <div className="min-w-0 flex-1 overflow-auto p-3 sm:p-4 md:p-6">{children}</div>
+        <div
+          className={`min-h-0 min-w-0 flex-1 p-3 sm:p-4 md:p-6 ${
+            currentPage === "chat" ? "overflow-hidden" : "overflow-auto"
+          }`}
+        >
+          {children}
+        </div>
       </main>
     </div>
   )
