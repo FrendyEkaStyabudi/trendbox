@@ -1,0 +1,11 @@
+.env
+.env.*
+__pycache__/
+*.py[cod]
+*.zip
+*.csv
+*.png
+*.onnx
+sensor_logs/
+.git/
+.vscode/

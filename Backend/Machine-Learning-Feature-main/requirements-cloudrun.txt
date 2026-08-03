@@ -1,0 +1,13 @@
+Flask==3.1.0
+Flask-Cors==6.0.0
+Flask-SocketIO==5.5.1
+gunicorn==23.0.0
+mediapipe==0.10.21
+mysql-connector-python==9.4.0
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+paho-mqtt==2.1.0
+Pillow==11.2.1
+simple-websocket==1.1.0
+tensorflow==2.19.0
+ultralytics==8.4.90

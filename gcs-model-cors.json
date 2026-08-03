@@ -1,0 +1,13 @@
+[
+  {
+    "origin": [
+      "https://trendbox-web-590242083739.asia-southeast2.run.app",
+      "https://trendbox-web-3rk7if5itq-et.a.run.app",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000"
+    ],
+    "method": ["GET", "HEAD"],
+    "responseHeader": ["Content-Type", "Content-Length", "Accept-Ranges", "ETag"],
+    "maxAgeSeconds": 3600
+  }
+]

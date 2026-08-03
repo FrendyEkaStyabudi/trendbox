@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Realtime Emotion Tracking</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .panel { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+        .box { border: 1px solid #ccc; padding: 10px; border-radius: 8px; width: 250px; }
+        video, img { border: 2px solid #333; margin-bottom: 10px; display: block; }
+        .tracker-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        .tracker-table th, .tracker-table td {
+            padding: 8px; border: 1px solid #ccc; text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>Realtime Emotion Tracking</h1>
+
+    <div class="panel">
+        <div class="box">
+            <strong>Processing Latency</strong>
+            <div id="latency">--</div>
+        </div>
+        <div class="box">
+            <strong>Confidence Threshold</strong>
+            <span id="threshold-val">75%</span><br>
+            <input type="range" id="threshold-slider" min="50" max="100" value="75">
+        </div>
+        <div class="box">
+            <strong>Camera</strong><br>
+            <select id="cameraSelect"></select><br>
+            <button onclick="togglePreview()">Show/Hide Preview</button>
+        </div>
+        <div class="box">
+            <a href="{{ url_for('download_csv') }}">
+                <button style="margin-top: 10px;">Download Emotion CSV</button>
+            </a>
+        </div>
+    </div>
+
+    <!-- Preview webcam mentah (optional) -->
+    <video id="video" width="800" height="600" autoplay muted style="display: none;"></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <!-- Tampilan hasil proses -->
+    <img id="result" width="800" height="600" alt="Processed frame will appear here.">
+
+    <h2>Person Tracking</h2>
+    <div><span id="people-count">0</span> people currently tracked</div>
+    <table class="tracker-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Emotion</th>
+                <th>Confidence</th>
+                <th>Duration</th>
+            </tr>
+        </thead>
+        <tbody id="person-tracking"></tbody>
+    </table>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const result = document.getElementById('result');
+        const thresholdSlider = document.getElementById('threshold-slider');
+        const thresholdVal = document.getElementById('threshold-val');
+        const cameraSelect = document.getElementById('cameraSelect');
+
+        let confidenceThreshold = 0.75;
+        let currentStream = null;
+
+        // Update threshold value
+        thresholdSlider.oninput = () => {
+            confidenceThreshold = thresholdSlider.value / 100;
+            thresholdVal.textContent = `${thresholdSlider.value}%`;
+        };
+
+        function togglePreview() {
+            video.style.display = video.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // List available video input devices
+        async function getCameras() {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            cameraSelect.innerHTML = ''; // Clear previous
+            videoDevices.forEach((device, index) => {
+                const option = document.createElement('option');
+                option.value = device.deviceId;
+                option.text = device.label || `Camera ${index + 1}`;
+                cameraSelect.appendChild(option);
+            });
+
+            if (videoDevices.length > 0) {
+                startCamera(videoDevices[0].deviceId);
+            }
+        }
+
+        // Start webcam by deviceId
+        async function startCamera(deviceId) {
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+
+            currentStream = await navigator.mediaDevices.getUserMedia({
+                video: { deviceId: { exact: deviceId } }
+            });
+
+            video.srcObject = currentStream;
+            video.play();
+        }
+
+        // Handle camera change
+        cameraSelect.onchange = () => {
+            const deviceId = cameraSelect.value;
+            if (deviceId) {
+                startCamera(deviceId);
+            }
+        };
+
+        // Kirim frame ke server setiap 500ms dan tampilkan hasilnya
+        setInterval(() => {
+            if (video.readyState >= 2) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                canvas.toBlob(blob => {
+                    fetch('/inference_image', {
+                        method: 'POST',
+                        body: blob
+                    }).then(res => res.blob())
+                      .then(imageBlob => {
+                          const imageUrl = URL.createObjectURL(imageBlob);
+                          result.src = imageUrl;
+                      });
+                }, 'image/jpeg');
+            }
+        }, 500);
+
+        // Update tracking info
+        setInterval(() => {
+            fetch("/status").then(res => res.json()).then(data => {
+                document.getElementById('latency').textContent = `${data.processing_latency}ms`;
+                document.getElementById('people-count').textContent = data.people_count;
+
+                const tbody = document.getElementById('person-tracking');
+                tbody.innerHTML = "";
+                data.tracked_people.forEach(p => {
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${p.id}</td>
+                            <td>${p.emotion}</td>
+                            <td>${p.confidence}%</td>
+                            <td>${p.duration}</td>
+                        </tr>
+                    `;
+                });
+            });
+        }, 1000);
+
+        // Init
+        getCameras();
+    </script>
+</body>
+</html>
