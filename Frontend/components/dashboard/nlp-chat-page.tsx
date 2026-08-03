@@ -12,7 +12,6 @@ import { Input } from "@/components/ui/input"
 import { Send, Bot, User, Clock, RefreshCw, BarChart, ChevronRight, Download } from "lucide-react"
 import ReactMarkdown, { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChatSettings } from "./ChatSettings"
 import { EmotionChart, isDataChartable } from "./EmotionChart"
 
 // --- Interface dan Konstanta (Tidak Berubah) ---
@@ -62,14 +61,13 @@ export default function NlpChatPage({ currentUser }: NlpChatPageProps) {
     {
       id: "1",
       sender: "bot",
-      text: currentUser 
-        ? "Hello! I'm your emotion analytics assistant. How can I help you today?"
-        : "Hello! I'm your emotion analytics assistant. Please log in to access chatbot settings and advanced features.",
+      text: "Hello! I'm your emotion analytics assistant. How can I help you today?",
       timestamp: new Date(Date.now() - 60000),
     },
   ])
   const [isTyping, setIsTyping] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const isSendingRef = useRef(false)
 
   // --- Functions (Tidak Berubah) ---
   const scrollToBottom = () => {
@@ -83,6 +81,7 @@ export default function NlpChatPage({ currentUser }: NlpChatPageProps) {
   const handleSendMessage = async (textParam?: string) => {
     const currentQueryText = (typeof textParam === 'string' ? textParam : message).trim();
     if (!currentQueryText) return
+    if (isSendingRef.current) return
 
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
@@ -92,9 +91,8 @@ export default function NlpChatPage({ currentUser }: NlpChatPageProps) {
     }
 
     setChatMessages((prev) => [...prev, userMessage])
-    if (typeof textParam !== 'string') {
-        setMessage("")
-    }
+    setMessage("")
+    isSendingRef.current = true
     setIsTyping(true)
 
     try {
@@ -143,7 +141,7 @@ const response = await fetch(`${process.env.NEXT_PUBLIC_NLP_API_BASE_URL ?? "htt
         id: (Date.now() + 1).toString(),
         sender: "bot",
         text: botTextResponse,
-        hasChart: backendData.has_chart_data || false,
+        hasChart: Boolean(backendData.has_chart_data && isDataChartable(backendData.query_result || [])),
         timestamp: new Date(),
         generatedSQL: backendData.generated_sql,
         reasoning: backendData.reasoning,
@@ -166,8 +164,13 @@ const response = await fetch(`${process.env.NEXT_PUBLIC_NLP_API_BASE_URL ?? "htt
       };
       setChatMessages((prev) => [...prev, errorBotMessage]);
     } finally {
+      isSendingRef.current = false
       setIsTyping(false);
     }
+  }
+
+  const handleQuickQuestion = (question: string) => {
+    void handleSendMessage(question);
   }
 
   const formatTime = (date: Date) => {
@@ -202,19 +205,32 @@ const response = await fetch(`${process.env.NEXT_PUBLIC_NLP_API_BASE_URL ?? "htt
     handleSendMessage();
   }
 
-// --- [PERBAIKAN UTAMA DI SINI] ---
-// Pastikan struktur return Anda sama persis seperti ini.
 return (
-    // 1. DIV PEMBUNGKUS UTAMA: Harus punya `grid` dan `md:grid-cols-5` untuk membuat 2 kolom di desktop.
-    <div className="grid h-[calc(100svh-7rem)] min-h-[560px] min-w-0 grid-cols-1 gap-4 md:h-[calc(100svh-9rem)] md:grid-cols-5">
+    <div className="grid h-full min-h-0 min-w-0 grid-cols-1 gap-4 overflow-hidden md:grid-cols-5">
       
-      {/* 2. KOLOM KIRI (CHAT): Harus punya `md:col-span-3` untuk mengambil 3 dari 5 bagian kolom. */}
-      <Card className="flex min-w-0 flex-col h-full md:col-span-3">
-        <CardHeader>
+      <Card className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden md:col-span-3">
+        <CardHeader className="shrink-0">
           <div className="flex flex-col items-start justify-between gap-3 sm:flex-row">
             <div className="min-w-0">
               <CardTitle className="flex items-center gap-2"><Bot className="h-6 w-6 text-primary"/> AI SQL Assistant</CardTitle>
               <CardDescription>Ask questions about emotion data using natural language</CardDescription>
+              <select
+                aria-label="Quick question"
+                defaultValue=""
+                className="mt-3 h-9 w-full rounded-md border border-input bg-background px-3 text-sm md:hidden"
+                onChange={(event) => {
+                  if (event.target.value) {
+                    handleQuickQuestion(event.target.value)
+                    event.target.selectedIndex = 0
+                  }
+                }}
+                disabled={isTyping}
+              >
+                <option value="" disabled>Choose a quick question</option>
+                {QUICK_QUESTIONS.map((question) => (
+                  <option key={question} value={question}>{question}</option>
+                ))}
+              </select>
             </div>
             <div className="flex shrink-0 items-center space-x-2">
               <Badge variant="outline" className="flex items-center gap-1"><Clock className="h-3 w-3" /><span>Real-time</span></Badge>
@@ -222,8 +238,8 @@ return (
             </div>
           </div>
         </CardHeader>
-        <CardContent className="flex-1 flex flex-col overflow-hidden p-0">
-          <div className="flex-1 overflow-y-auto px-4 py-2 space-y-4">
+        <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-2">
             {chatMessages.map((msg) => (
               <div key={msg.id} className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}>
                 <div className={`flex min-w-0 gap-3 max-w-[95%] md:max-w-[80%] ${msg.sender === "user" ? "flex-row-reverse" : ""}`}>
@@ -259,28 +275,25 @@ return (
             {isTyping && ( <div className="flex justify-start"><div className="flex gap-3 max-w-[80%]"><Avatar className="h-8 w-8 bg-muted flex-shrink-0"><AvatarFallback><Bot className="h-4 w-4" /></AvatarFallback></Avatar><div className="space-y-1"><div className="rounded-lg p-3 bg-muted flex items-center gap-1.5 h-8"><Skeleton className="h-1.5 w-1.5 rounded-full bg-slate-400 animate-bounce" /><Skeleton className="h-1.5 w-1.5 rounded-full bg-slate-400 animate-bounce delay-200" /><Skeleton className="h-1.5 w-1.5 rounded-full bg-slate-400 animate-bounce delay-400" /></div></div></div></div> )}
             <div ref={messagesEndRef} />
           </div>
-          <div className="border-t p-3 md:p-4">
+          <div className="shrink-0 border-t p-3 md:p-4">
             <form onSubmit={handleSubmit} className="flex gap-2 items-center">
-              <Input value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Ask a question about emotion data..." className="flex-1 h-10" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }}} />
+              <Input value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Ask a question about emotion data..." className="flex-1 h-10" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleSendMessage(); }}} />
               <Button type="submit" size="icon" className="h-10 w-10 flex-shrink-0" disabled={isTyping || !message.trim()}><Send className="h-4 w-4" /></Button>
             </form>
           </div>
         </CardContent>
       </Card>
 
-      {/* 3. KOLOM KANAN (SETTINGS & QUICK QUESTIONS): Harus punya `md:col-span-2` untuk mengambil 2 sisa kolom. */}
-      <div className="min-w-0 flex flex-col gap-4 md:col-span-2">
-        {currentUser && <ChatSettings />}
-        
-        <Card className="flex-col h-full hidden md:flex flex-1">
-          <CardHeader>
+      <div className="hidden min-h-0 min-w-0 flex-col gap-4 md:col-span-2 md:flex">
+        <Card className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+          <CardHeader className="shrink-0">
             <CardTitle className="flex items-center gap-2"><ChevronRight className="h-5 w-5 text-muted-foreground"/> Quick Questions</CardTitle>
             <CardDescription>Examples to get you started.</CardDescription>
           </CardHeader>
-          <CardContent className="flex-1 overflow-y-auto">
+          <CardContent className="min-h-0 flex-1 overflow-hidden">
             <div className="space-y-2">
               {QUICK_QUESTIONS.map((question, index) => (
-                <Button key={index} variant="outline" className="w-full justify-start text-left h-auto py-2.5 px-3 text-sm hover:bg-accent/50" onClick={() => { setMessage(question); handleSendMessage(question); }} disabled={isTyping || !currentUser}>
+                <Button key={index} variant="outline" className="w-full justify-start text-left h-auto py-2.5 px-3 text-sm hover:bg-accent/50" onClick={() => handleQuickQuestion(question)} disabled={isTyping}>
                   <ChevronRight className="mr-2 h-4 w-4 flex-shrink-0 text-primary" />
                   <span className="line-clamp-2">{question}</span>
                 </Button>

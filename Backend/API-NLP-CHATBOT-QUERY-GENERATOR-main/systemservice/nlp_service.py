@@ -146,7 +146,7 @@ def generate_sql_and_reason(prompt: str, config: Settings):
     
     if config.PROVIDER == 'groq':
         if not config.GROQ_API_KEY:
-            error_msg = "The provider is set to 'groq', but the API key is not configured. Configure it in Chatbot Settings."
+            error_msg = "The provider is set to 'groq', but the API key is not configured on the backend."
             return "", error_msg
             
         groq_endpoint = "https://api.groq.com/openai/v1/chat/completions"
