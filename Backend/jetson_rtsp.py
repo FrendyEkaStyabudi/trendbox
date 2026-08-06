@@ -57,7 +57,7 @@ MQTT_USERNAME = 'trendbox'
 MQTT_PASSWORD = 'trendbox123'
 MQTT_USE_TLS = True
 
-FRAME_SKIP = 3
+FRAME_SKIP = 2
 SENSOR_INTERVAL = 5
 
 sio = socketio.Client()
@@ -325,8 +325,8 @@ def capture_thread():
 def send_thread():
     global running, frame_counter
     
-    print("Send thread started (Optimized for Cloud Run Realtime)")
-    TARGET_INTERVAL = 0.12  # ~8 FPS smooth stream over Cloud HTTPS
+    print("Send thread started (Optimized for Cloud Run Realtime - 15 FPS)")
+    TARGET_INTERVAL = 0.07  # ~15 FPS smooth stream over Cloud HTTPS
     
     while running:
         loop_start = time.time()
