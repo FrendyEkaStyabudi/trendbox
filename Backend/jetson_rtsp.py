@@ -18,6 +18,15 @@ except ImportError:
     print("Library pyrealsense2 not found.")
     print("Install with: pip install pyrealsense2")
 
+# --- WEBSOCKET CLIENT IMPORT ---
+try:
+    import websocket
+    HAS_WEBSOCKET = True
+except ImportError:
+    HAS_WEBSOCKET = False
+    print("⚠️ [PENTING] Library websocket-client belum terinstall di Jetson!")
+    print("👉 Silakan jalankan: pip3 install websocket-client")
+
 # --- MQTT IMPORT ---
 try:
     import paho.mqtt.client as mqtt
@@ -402,7 +411,8 @@ if __name__ == "__main__":
     try:
         print(f"Connecting to {SERVER_URL}...")
         try:
-            sio.connect(SERVER_URL, transports=['websocket', 'polling'])
+            transports = ['websocket'] if HAS_WEBSOCKET else ['websocket', 'polling']
+            sio.connect(SERVER_URL, transports=transports)
         except Exception as e:
             print(f"SocketIO Connection Warning: {e}")
 
