@@ -27,8 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install pip requirements
 COPY requirements-cloudrun.txt .
 RUN python -m pip install --no-cache-dir \
-      torch==2.5.1 torchvision==0.20.1 \
-      --index-url https://download.pytorch.org/whl/cu121 && \
+      torch torchvision \
+      --index-url https://download.pytorch.org/whl/cpu && \
     python -m pip install --no-cache-dir -r requirements-cloudrun.txt
 
 WORKDIR /app
