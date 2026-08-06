@@ -38,7 +38,9 @@ const DASHBOARD_API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   "https://trendbox-dashboard-api-590242083739.asia-southeast2.run.app";
 const FRAME_INTERVAL_MS = Number(process.env.NEXT_PUBLIC_WEBGPU_FRAME_INTERVAL_MS ?? 180);
-const DEFAULT_REALTIME_API_URL = process.env.NEXT_PUBLIC_REALTIME_API_URL || "http://192.168.0.123:5001";
+const DEFAULT_REALTIME_API_URL =
+  process.env.NEXT_PUBLIC_REALTIME_API_URL ||
+  "https://trendbox-realtime-api-590242083739.asia-southeast2.run.app";
 
 type TrackingConfig = {
   emotion: boolean;

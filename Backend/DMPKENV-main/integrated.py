@@ -91,6 +91,10 @@ def add_forecast_log(level, message):
 
 add_forecast_log("INFO", "Combined Flask API starting up.")
 
+@app.get('/')
+def root():
+    return jsonify({'status': 'ok', 'service': 'dashboard-api', 'health': '/health'})
+
 @app.get('/health')
 def health():
     return jsonify({'status': 'ok', 'service': 'dashboard-api'})

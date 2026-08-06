@@ -38,7 +38,8 @@ except ImportError:
     print("Install: pip install adafruit-circuitpython-dht adafruit-circuitpython-bh1750")
 
 # --- CONFIG ---
-SERVER_URL = 'http://192.168.0.123:5001'
+import os
+SERVER_URL = os.getenv('REALTIME_API_URL', 'https://trendbox-realtime-api-590242083739.asia-southeast2.run.app')
 
 MQTT_BROKER = 'aa5271d0.ala.asia-southeast1.emqxsl.com'
 MQTT_PORT = 8883
