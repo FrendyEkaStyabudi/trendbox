@@ -325,26 +325,27 @@ def capture_thread():
 def send_thread():
     global running, frame_counter
     
-    print("Send thread started")
+    print("Send thread started (Optimized for Cloud Run Realtime)")
+    TARGET_INTERVAL = 0.12  # ~8 FPS smooth stream over Cloud HTTPS
     
     while running:
+        loop_start = time.time()
         try:
             frame = frame_queue.get(timeout=1)
             
-            if frame is None:
-                print("Skipping None frame")
-                continue
-            
-            if frame.size == 0:
-                print("Skipping empty frame")
-                continue
-            
-            if len(frame.shape) != 3 or frame.shape[2] != 3:
-                print(f"Skipping invalid frame shape: {frame.shape}")
+            # Flush stale queued frames so we ALWAYS process the newest frame
+            while not frame_queue.empty():
+                try:
+                    latest = frame_queue.get_nowait()
+                    if latest is not None and latest.size > 0:
+                        frame = latest
+                except queue.Empty:
+                    break
+
+            if frame is None or frame.size == 0 or len(frame.shape) != 3 or frame.shape[2] != 3:
                 continue
             
             frame_counter += 1
-            
             if frame_counter % FRAME_SKIP != 0:
                 continue
             
@@ -352,23 +353,17 @@ def send_thread():
                 frame = cv2.resize(frame, (640, 480))
                 
                 if frame is None or frame.size == 0:
-                    print("Frame corrupted after resize")
                     continue
                 
-                success, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+                # Compress JPEG to quality 40 for fast internet transmission (~18KB per frame)
+                success, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
                 
-                if not success:
-                    print("Failed to encode frame to JPEG")
-                    continue
-                
-                if buffer is None or buffer.size == 0:
-                    print("Empty buffer after encoding")
+                if not success or buffer is None or buffer.size == 0:
                     continue
                 
                 img_b64 = base64.b64encode(buffer).decode('utf-8')
                 
                 if not img_b64 or len(img_b64) < 100:
-                    print(f"Invalid base64 string: length={len(img_b64)}")
                     continue
                 
                 if sio.connected:
@@ -387,9 +382,12 @@ def send_thread():
             continue
         except Exception as e:
             print(f"Send Error: {e}")
-            import traceback
-            traceback.print_exc()
-            time.sleep(1)
+            time.sleep(0.5)
+
+        # Pace sending to avoid choking socket buffers
+        elapsed = time.time() - loop_start
+        if elapsed < TARGET_INTERVAL:
+            time.sleep(TARGET_INTERVAL - elapsed)
 
     print("Send thread stopped")
 
