@@ -201,7 +201,11 @@ export default function RealtimeTrackingPage() {
   }, []);
 
   useEffect(() => {
-    const storedUrl = window.localStorage.getItem("trendbox-realtime-api-url");
+    let storedUrl = window.localStorage.getItem("trendbox-realtime-api-url");
+    if (storedUrl && storedUrl.includes("192.168.")) {
+      window.localStorage.removeItem("trendbox-realtime-api-url");
+      storedUrl = null;
+    }
     const activeUrl = storedUrl || process.env.NEXT_PUBLIC_REALTIME_API_URL || DEFAULT_REALTIME_API_URL;
     setDeviceApiUrl(activeUrl);
   }, []);
