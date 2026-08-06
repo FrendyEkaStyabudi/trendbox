@@ -31,11 +31,14 @@ app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'development-only')
 
 # --- UBAH ASYNC_MODE MENJADI 'threading' ---
 # Ini mencegah konflik dengan TensorFlow/OpenCV
+import engineio
+
 origins_env = os.getenv('FRONTEND_ORIGINS', '*')
 allowed_origins = '*' if origins_env.strip() == '*' else [
     origin.strip() for origin in origins_env.split(',') if origin.strip()
 ]
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading', ping_timeout=60, ping_interval=25)
+app.wsgi_app = engineio.WSGIApp(socketio.server, app.wsgi_app)
 CORS(app, origins=allowed_origins)
 
 client_sessions = {}
