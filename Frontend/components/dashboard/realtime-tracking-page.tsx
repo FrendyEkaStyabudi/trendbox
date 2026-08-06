@@ -38,7 +38,7 @@ const DASHBOARD_API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   "https://trendbox-dashboard-api-590242083739.asia-southeast2.run.app";
 const FRAME_INTERVAL_MS = Number(process.env.NEXT_PUBLIC_WEBGPU_FRAME_INTERVAL_MS ?? 180);
-const DEFAULT_REALTIME_API_URL = process.env.NEXT_PUBLIC_REALTIME_API_URL ?? "";
+const DEFAULT_REALTIME_API_URL = process.env.NEXT_PUBLIC_REALTIME_API_URL || "http://192.168.0.123:5001";
 
 type TrackingConfig = {
   emotion: boolean;
@@ -58,7 +58,7 @@ type RealtimeLog = {
 export default function RealtimeTrackingPage() {
   const [isTrackingActive, setIsTrackingActive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
-  const [trackingMode, setTrackingMode] = useState<TrackingMode>("browser");
+  const [trackingMode, setTrackingMode] = useState<TrackingMode>("device-api");
   const [deviceApiUrl, setDeviceApiUrl] = useState(DEFAULT_REALTIME_API_URL);
   const [deviceFeedUrl, setDeviceFeedUrl] = useState("");
   const [cameraError, setCameraError] = useState("");
@@ -130,9 +130,78 @@ export default function RealtimeTrackingPage() {
       duration: Number(person.duration ?? 0),
     }));
 
+  const [cameraOptions, setCameraOptions] = useState<{ id: string; name: string; type: "jetson" | "browser" }[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>("");
+
+  useEffect(() => {
+    let isMounted = true;
+    const jetsonUrl = process.env.NEXT_PUBLIC_REALTIME_API_URL || DEFAULT_REALTIME_API_URL;
+
+    const detectAvailableCameras = async () => {
+      const options: { id: string; name: string; type: "jetson" | "browser" }[] = [];
+
+      // Check Jetson / Device API availability
+      try {
+        const res = await fetch(`${jetsonUrl}/health`, { cache: "no-store" });
+        if (res.ok) {
+          options.push({
+            id: "jetson-device-api",
+            name: "📷 Jetson Nano Camera (Realtime AI API)",
+            type: "jetson",
+          });
+        }
+      } catch {
+        // Jetson offline: automatically omitted from camera dropdown
+      }
+
+      // Check local browser cameras
+      try {
+        if (typeof navigator !== "undefined" && navigator.mediaDevices?.enumerateDevices) {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoDevices = devices.filter((d) => d.kind === "videoinput");
+          videoDevices.forEach((dev, idx) => {
+            options.push({
+              id: dev.deviceId || `local-cam-${idx}`,
+              name: dev.label || `📹 Camera ${idx + 1} (Browser)`,
+              type: "browser",
+            });
+          });
+        }
+      } catch {
+        // Ignore webcam permission errors
+      }
+
+      if (options.length === 0) {
+        options.push({
+          id: "default-webcam",
+          name: "📹 Web Camera",
+          type: "browser",
+        });
+      }
+
+      if (isMounted) {
+        setCameraOptions(options);
+
+        setSelectedCameraId((current) => {
+          if (current && options.some((o) => o.id === current)) return current;
+          const jetsonOpt = options.find((o) => o.type === "jetson");
+          return jetsonOpt ? jetsonOpt.id : options[0].id;
+        });
+      }
+    };
+
+    void detectAvailableCameras();
+    const interval = setInterval(detectAvailableCameras, 3000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   useEffect(() => {
     const storedUrl = window.localStorage.getItem("trendbox-realtime-api-url");
-    if (storedUrl) setDeviceApiUrl(storedUrl);
+    const activeUrl = storedUrl || process.env.NEXT_PUBLIC_REALTIME_API_URL || DEFAULT_REALTIME_API_URL;
+    setDeviceApiUrl(activeUrl);
   }, []);
 
   useEffect(() => {
@@ -184,7 +253,7 @@ export default function RealtimeTrackingPage() {
     stopCamera();
     const engine = engineRef.current;
     engineRef.current = null;
-    const completed = engine?.flushTracks() || [];
+    const completed = engine?.flushTracks(configRef.current) || [];
     void persistRecords(completed);
     void engine?.dispose();
     setIsTrackingActive(false);
@@ -303,25 +372,70 @@ export default function RealtimeTrackingPage() {
   };
 
   const pollDeviceStatus = (baseUrl: string) => {
+    let lastLoggedStatus: boolean | null = null;
     const loadStatus = async () => {
       try {
         const response = await fetch(`${baseUrl}/status`, { cache: "no-store" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = await response.json();
-        const people = normalizeTrackedPeople(body.tracked_people ?? body.people ?? []);
+        const rawPeople = normalizeTrackedPeople(body.tracked_people ?? body.people ?? []);
+        const people = rawPeople.map((person) => ({
+          ...person,
+          emotion: configRef.current.emotion ? person.emotion : "-",
+          confidence: configRef.current.emotion ? person.confidence : 0,
+          head: configRef.current.head ? person.head : "-",
+          clothes: configRef.current.clothing ? person.clothes : "-",
+        }));
         setTrackingData(people);
         setProcessingMs(Number(body.processing_ms ?? 0));
-        setModelStatus(`Device API connected: ${body.people_count ?? people.length} active person(s)`);
+
+        const isJetsonConnected = Boolean(body.jetson_connected);
+        if (isJetsonConnected !== lastLoggedStatus) {
+          lastLoggedStatus = isJetsonConnected;
+          if (isJetsonConnected) {
+            appendLog("info", "🟢 Jetson Nano terhubung & aktif mengirimkan data stream!");
+          } else {
+            appendLog("warn", "🟡 ML Backend aktif, tetapi belum ada stream dari Jetson Nano (Jalankan python3 jetson_rtsp.py di Jetson).");
+          }
+        }
+
+        setModelStatus(
+          isJetsonConnected
+            ? `Jetson Nano Terhubung: ${body.people_count ?? people.length} orang terdeteksi`
+            : "Realtime ML API Siap: Menunggu stream kamera Jetson Nano..."
+        );
       } catch (error: any) {
         appendLog("warn", `Unable to read device status: ${error?.message || "unknown error"}`);
       }
     };
 
     void loadStatus();
-    deviceStatusTimerRef.current = window.setInterval(loadStatus, 1000);
+    deviceStatusTimerRef.current = window.setInterval(loadStatus, 2000);
   };
 
-  const startDeviceTracking = async () => {
+  const sendConfigToDeviceApi = async (newConfig: TrackingConfig, baseUrlOverride?: string) => {
+    try {
+      const url = baseUrlOverride || deviceApiUrl || DEFAULT_REALTIME_API_URL;
+      const baseUrl = normalizeApiUrl(url);
+      const res = await fetch(`${baseUrl}/update_config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newConfig),
+      });
+      if (res.ok) {
+        appendLog("info", `Setting deteksi diperbarui ke Jetson API (${baseUrl})`);
+      } else {
+        appendLog(
+          "warn",
+          `Jetson API (${baseUrl}) belum diperbarui (HTTP ${res.status}). Harap salin file app.py & apisql.py terbaru ke perangkat Jetson Nano lalu restart service.`
+        );
+      }
+    } catch (err: any) {
+      // Offline / network error ignored silently or logged
+    }
+  };
+
+  const startDeviceTracking = async (overrideUrl?: string) => {
     if (isStarting || isTrackingActive) return;
     setCameraError("");
     setRealtimeLogs([]);
@@ -330,8 +444,9 @@ export default function RealtimeTrackingPage() {
     setIsStarting(true);
 
     try {
-      const baseUrl = normalizeApiUrl(deviceApiUrl);
+      const baseUrl = normalizeApiUrl(overrideUrl || deviceApiUrl || DEFAULT_REALTIME_API_URL);
       window.localStorage.setItem("trendbox-realtime-api-url", baseUrl);
+      void sendConfigToDeviceApi(configRef.current, baseUrl);
 
       if (window.location.protocol === "https:" && baseUrl.startsWith("http://")) {
         appendLog(
@@ -474,7 +589,7 @@ export default function RealtimeTrackingPage() {
       if (frameTimerRef.current !== null) window.clearTimeout(frameTimerRef.current);
       if (deviceStatusTimerRef.current !== null) window.clearInterval(deviceStatusTimerRef.current);
       streamRef.current?.getTracks().forEach((track) => track.stop());
-      const completed = engineRef.current?.flushTracks() || [];
+      const completed = engineRef.current?.flushTracks(configRef.current) || [];
       if (completed.length > 0) void persistRecords(completed);
       void engineRef.current?.dispose();
       engineRef.current = null;
@@ -482,7 +597,12 @@ export default function RealtimeTrackingPage() {
   }, []);
 
   const toggleConfig = (key: keyof TrackingConfig) => {
-    setConfig((current) => ({ ...current, [key]: !current[key] }));
+    setConfig((current) => {
+      const next = { ...current, [key]: !current[key] };
+      configRef.current = next;
+      void sendConfigToDeviceApi(next);
+      return next;
+    });
   };
 
   return (
@@ -506,34 +626,33 @@ export default function RealtimeTrackingPage() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="space-y-2">
-                  <Label htmlFor="tracking-mode">Tracking Mode</Label>
+                  <Label htmlFor="camera-select" className="font-semibold text-slate-700">
+                    Pilih Kamera / Sumber Stream
+                  </Label>
                   <select
-                    id="tracking-mode"
-                    value={trackingMode}
+                    id="camera-select"
+                    value={selectedCameraId}
                     disabled={isTrackingActive || isStarting}
-                    onChange={(event) => setTrackingMode(event.target.value as TrackingMode)}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    onChange={(event) => {
+                      const camId = event.target.value;
+                      setSelectedCameraId(camId);
+                      const selected = cameraOptions.find((c) => c.id === camId);
+                      if (selected) {
+                        setTrackingMode(selected.type === "jetson" ? "device-api" : "browser");
+                      }
+                    }}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-medium ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <option value="browser">Browser Webcam</option>
-                    <option value="device-api">Jetson / Raspberry Pi API</option>
+                    {cameraOptions.map((cam) => (
+                      <option key={cam.id} value={cam.id}>
+                        {cam.name}
+                      </option>
+                    ))}
                   </select>
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Kamera Jetson Nano terdeteksi secara otomatis dari jaringan. Kamera lokal browser akan muncul di daftar jika diizinkan.
+                  </p>
                 </div>
-
-                {trackingMode === "device-api" && (
-                  <div className="space-y-2">
-                    <Label htmlFor="device-api-url">Device API URL</Label>
-                    <Input
-                      id="device-api-url"
-                      value={deviceApiUrl}
-                      disabled={isTrackingActive || isStarting}
-                      placeholder="https://device.example.com or http://192.168.1.20:5001"
-                      onChange={(event) => setDeviceApiUrl(event.target.value)}
-                    />
-                    <p className="text-xs leading-relaxed text-slate-500">
-                      The device API should expose <span className="font-mono">/video_feed</span> and <span className="font-mono">/status</span>. For the hosted web app, an HTTPS endpoint or tunnel is the most reliable option.
-                    </p>
-                  </div>
-                )}
 
                 {isTrackingActive ? (
                   <Button variant="destructive" className="w-full" onClick={stopTracking}>
@@ -577,31 +696,25 @@ export default function RealtimeTrackingPage() {
                 <CardTitle>Detection Settings</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {trackingMode === "device-api" ? (
-                  <p className="text-sm leading-relaxed text-slate-600">
-                    Detection settings are controlled by the Jetson/Raspberry Pi service. This web app reads the device stream and status endpoints.
-                  </p>
-                ) : (
-                  [
-                    { key: "emotion", label: "Emotion Detection", available: capabilities.emotion },
-                    { key: "head", label: "YOLO Head Detection", available: capabilities.head },
-                    { key: "clothing", label: "YOLO Clothing Detection", available: capabilities.clothing },
-                    { key: "db_save", label: "Save to Database", available: true },
-                  ].map(({ key, label, available }) => (
-                    <div key={key} className="flex justify-between">
-                      <span className={!available ? "text-slate-400" : ""}>
-                        {label}{!available ? " (light mode)" : ""}
-                      </span>
-                      <input
-                        type="checkbox"
-                        checked={config[key as keyof TrackingConfig]}
-                        disabled={!available}
-                        onChange={() => toggleConfig(key as keyof TrackingConfig)}
-                        className="toggle toggle-success cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
-                      />
-                    </div>
-                  ))
-                )}
+                {[
+                  { key: "emotion", label: "Emotion Detection", available: trackingMode === "device-api" ? true : capabilities.emotion },
+                  { key: "head", label: "YOLO Head Detection", available: trackingMode === "device-api" ? true : capabilities.head },
+                  { key: "clothing", label: "YOLO Clothing Detection", available: trackingMode === "device-api" ? true : capabilities.clothing },
+                  { key: "db_save", label: "Save to Database", available: true },
+                ].map(({ key, label, available }) => (
+                  <div key={key} className="flex items-center justify-between">
+                    <span className={!available ? "text-slate-400" : "font-medium text-slate-700"}>
+                      {label}{!available ? " (light mode)" : ""}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={config[key as keyof TrackingConfig]}
+                      disabled={!available}
+                      onChange={() => toggleConfig(key as keyof TrackingConfig)}
+                      className="h-5 w-5 rounded border-slate-300 text-purple-600 focus:ring-purple-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                    />
+                  </div>
+                ))}
               </CardContent>
             </Card>
           </div>
@@ -683,13 +796,31 @@ export default function RealtimeTrackingPage() {
                           <TableRow key={person.id}>
                             <TableCell>{person.id}</TableCell>
                             <TableCell>
-                              {person.emotion}
-                              {person.confidence > 0
-                                ? ` (${(person.confidence * 100).toFixed(0)}%)`
-                                : ""}
+                              {config.emotion && person.emotion !== "-" ? (
+                                <>
+                                  {person.emotion}
+                                  {person.confidence > 0
+                                    ? ` (${(person.confidence * 100).toFixed(0)}%)`
+                                    : ""}
+                                </>
+                              ) : (
+                                <span className="italic font-normal text-slate-400">Off</span>
+                              )}
                             </TableCell>
-                            <TableCell>{person.head}</TableCell>
-                            <TableCell>{person.clothes}</TableCell>
+                            <TableCell>
+                              {config.head && person.head !== "-" ? (
+                                person.head
+                              ) : (
+                                <span className="italic font-normal text-slate-400">Off</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {config.clothing && person.clothes !== "-" ? (
+                                person.clothes
+                              ) : (
+                                <span className="italic font-normal text-slate-400">Off</span>
+                              )}
+                            </TableCell>
                             <TableCell>
                               {person.duration > 0 ? `${person.duration.toFixed(1)}s` : "-"}
                             </TableCell>

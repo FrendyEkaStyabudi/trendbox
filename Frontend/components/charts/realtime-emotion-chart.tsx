@@ -50,8 +50,7 @@ type RealtimeEmotionChartProps = {
   metric?: "emotion" | "head" | "clothing";
 };
 
-// const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://dmpkenvfix-1091079456692.asia-southeast2.run.app";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:5000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://192.168.0.123:5000";
 
 const EMOTION_HSL_COLORS: Record<string, string> = {
   happy: "48, 100%, 50%", sad: "205, 70%, 50%", angry: "0, 70%, 50%",
@@ -159,8 +158,8 @@ export default function RealtimeEmotionChart({
         setChartData({ labels, datasets });
       })
       .catch((err) => {
-        console.error(`Error fetching trends from ${endpoint}:`, err);
-        setChartData({ labels: ["Error"], datasets: [{ label: "Error loading data", data: [], backgroundColor: 'rgba(255,99,132,0.2)'}] });
+        console.warn(`[RealtimeEmotionChart] Backend offline or starting up:`, err?.message || err);
+        setChartData({ labels: ["No Data"], datasets: [{ label: "Data Offline", data: [], backgroundColor: 'rgba(255,99,132,0.2)'}] });
       })
       .finally(() => {
         setIsLoading(false);

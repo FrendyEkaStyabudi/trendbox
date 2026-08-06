@@ -1,4 +1,4 @@
-﻿// src/components/tables/recent-emotion-logs-table.tsx
+// src/components/tables/recent-emotion-logs-table.tsx
 "use client";
 
 import React, { useEffect, useState, useMemo } from "react";
@@ -46,9 +46,7 @@ interface ActiveFilters {
   emotions: string[];
 }
 
-const API_BASE_URL =
-  // process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://dmpkenvfix-1091079456692.asia-southeast2.run.app";
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:5000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://192.168.0.123:5000";
 
 const emotionDisplayConfig: Record<string, { className: string }> = {
   happy: { className: "bg-orange-500 text-white border-orange-600" },

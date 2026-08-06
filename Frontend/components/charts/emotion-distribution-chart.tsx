@@ -1,4 +1,4 @@
-﻿// src/components/charts/emotion-distribution-chart.tsx
+// src/components/charts/emotion-distribution-chart.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -38,8 +38,7 @@ type EmotionDistributionChartProps = {
   metric?: "emotion" | "head" | "clothing";
 };
 
-// const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://dmpkenvfix-1091079456692.asia-southeast2.run.app";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:5000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://192.168.0.123:5000";
 
 // Warna dasar untuk chart emosi (bisa diperluas)
 const EMOTION_CHART_COLORS: Record<string, { background: string; border: string }> = {
@@ -108,8 +107,8 @@ export default function EmotionDistributionChart({ range, metric = "emotion" }: 
         });
       })
       .catch((err) => {
-        console.error(`Error fetching distribution for ${range}:`, err);
-        setChartData({ labels: ["Error"], datasets: [{ label: "Error loading data", data: [], backgroundColor: 'rgba(255,99,132,0.2)'}] });
+        console.warn(`[DistributionChart] Backend offline or starting up for ${range}:`, err?.message || err);
+        setChartData({ labels: ["No Data"], datasets: [{ label: "Data Offline", data: [], backgroundColor: 'rgba(255,99,132,0.2)'}] });
       })
       .finally(() => {
         setIsLoading(false);

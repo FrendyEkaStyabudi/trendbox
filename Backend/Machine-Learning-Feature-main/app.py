@@ -1,4 +1,4 @@
-﻿from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify, Response
 from flask_socketio import SocketIO
 from flask_cors import CORS
 import cv2
@@ -218,10 +218,19 @@ def init_mqtt_subscriber():
 #                  CLIENT CONNECTION HANDLERS
 # ============================================================
 
+GLOBAL_CONFIG = {
+    "emotion": True,
+    "head": True,
+    "clothing": True,
+    "db_save": True,
+}
+
 @socketio.on('connect')
 def handle_connect():
     sid = request.sid
-    client_sessions[sid] = EmotionTracker(sid)
+    tracker = EmotionTracker(sid)
+    tracker.update_settings(GLOBAL_CONFIG)
+    client_sessions[sid] = tracker
     socketio.emit("realtime_log_history", {"logs": list(REALTIME_LOGS)}, room=sid)
     publish_log("info", f"Client connected: {sid}", sid=sid)
 
@@ -250,6 +259,7 @@ def handle_config(data):
     sid = request.sid
     if sid in client_sessions:
         client_sessions[sid].update_settings(data)
+        GLOBAL_CONFIG.update(data)
         publish_log("info", f"Config updated: {data}", sid=sid)
 
 # =================================================
@@ -261,6 +271,8 @@ import time
 
 # Global dict untuk tracking last process time per session
 last_process_time = {}
+last_jetson_frame_time = 0
+latest_frame_bytes = None
 processing_sessions = set()
 processing_lock = threading.Lock()
 INFERENCE_CONCURRENCY = max(1, int(os.getenv('INFERENCE_CONCURRENCY', '1')))
@@ -272,6 +284,8 @@ VERBOSE_FRAME_LOGS = os.getenv('VERBOSE_FRAME_LOGS', 'false').lower() in ('1', '
 
 @socketio.on('inference_image')
 def handle_inference(data):
+    global last_jetson_frame_time
+    last_jetson_frame_time = time.time()
     sid = request.sid
     if sid not in client_sessions:
         print(f"âš  [{sid}] Session not found!")
@@ -344,17 +358,20 @@ def handle_inference(data):
         )
         if not ok:
             raise RuntimeError('Failed to encode inference result')
+        
+        global latest_frame_bytes
+        latest_frame_bytes = buffer.tobytes()
         img_b64 = base64.b64encode(buffer).decode('utf-8')
 
-        # Kirim hasil hanya ke client pengirim agar tidak menambah traffic client lain.
+        # Broadcast hasil ke seluruh client web yang sedang menonton stream
         socketio.emit('result_data', {
             "image": "data:image/jpeg;base64," + img_b64,
             "people": people,
             "count": len(people),
             "processing_ms": processing_ms,
             "fps": round(1000 / processing_ms, 1) if processing_ms > 0 else 0,
-            "source": sid  # Tambahkan info source
-        }, room=sid)
+            "source": sid
+        })
 
     except Exception as e:
         publish_log("error", f"Error inference: {e}", sid=sid)
@@ -447,7 +464,66 @@ def start_rtsp_handler(data):
 
 # ============================================================
 #                     DOWNLOAD LOG FILE
-# ============================================================
+@app.route('/health')
+def health_check():
+    try:
+        jetson_connected = (time.time() - last_jetson_frame_time) < 10.0
+        return jsonify({
+            "status": "ok",
+            "service": "Realtime ML API",
+            "jetson_connected": jetson_connected
+        })
+    except Exception:
+        return jsonify({"status": "ok", "service": "Realtime ML API", "jetson_connected": False})
+
+@app.route('/status')
+def status_check():
+    try:
+        jetson_connected = (time.time() - last_jetson_frame_time) < 10.0
+        people = []
+        for sid, tracker in list(client_sessions.items()):
+            people.extend(tracker.get_people_json())
+        return jsonify({
+            "status": "ok",
+            "jetson_connected": jetson_connected,
+            "people_count": len(people),
+            "tracked_people": people,
+            "processing_ms": 45,
+            "config": GLOBAL_CONFIG,
+        })
+    except Exception:
+        return jsonify({
+            "status": "ok",
+            "jetson_connected": False,
+            "people_count": 0,
+            "tracked_people": [],
+            "processing_ms": 0,
+            "config": GLOBAL_CONFIG,
+        })
+
+@app.route('/update_config', methods=['POST', 'OPTIONS'])
+def update_config_http():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"})
+    try:
+        data = request.get_json() or {}
+        GLOBAL_CONFIG.update(data)
+        for sid, tracker in list(client_sessions.items()):
+            tracker.update_settings(data)
+        publish_log("info", f"Global config updated via HTTP: {data}")
+        return jsonify({"status": "ok", "config": GLOBAL_CONFIG})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/video_feed')
+def video_feed():
+    def generate():
+        while True:
+            if latest_frame_bytes is not None:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + latest_frame_bytes + b'\r\n')
+            time.sleep(0.04)
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/download_log')
 def download_log():

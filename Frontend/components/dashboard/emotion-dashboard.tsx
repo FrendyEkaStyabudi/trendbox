@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { useEffect, useState } from "react"
 import {
@@ -117,10 +117,10 @@ function AttributeBreakdown({ title, stats }: { title: string; stats: AttributeS
 
 export default function EmotionDashboard() {
   // const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://dmpkenvfix-1091079456692.asia-southeast2.run.app"
-  const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:5000"
+  const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://192.168.0.123:5000"
 
   const [activeTab, setActiveTab] = useState("overview")
-  const [mockVideoFeed, setMockVideoFeed] = useState(true) // Keep if used
+  const [mockVideoFeed, setMockVideoFeed] = useState(true)
   const [summary, setSummary] = useState<SummaryResponse>({
     detected_faces: 0,
     dominant_emotion: "N/A",
@@ -138,7 +138,7 @@ export default function EmotionDashboard() {
 
   const fetchSummary = async () => {
     try {
-      const res = await fetch(`${API}/api/summary`)
+      const res = await fetch(`${API}/api/summary`, { cache: "no-store" })
       if (!res.ok) throw new Error(`API Error: ${res.status}`)
       const data: Partial<SummaryResponse> = await res.json()
       setSummary({
@@ -147,21 +147,14 @@ export default function EmotionDashboard() {
         weekly_changes: data.weekly_changes ?? {},
         attribute_summary: data.attribute_summary ?? emptyAttributeSummary(),
       })
-    } catch (err) {
-      console.error("Error fetching summary:", err)
-      // Optionally set summary to default error state
-      setSummary({
-        detected_faces: 0,
-        dominant_emotion: "Error",
-        weekly_changes: {},
-        attribute_summary: emptyAttributeSummary(),
-      });
+    } catch (err: any) {
+      console.warn("[EmotionDashboard] Backend offline or starting up:", err?.message || err)
     }
   }
 
   useEffect(() => {
     fetchSummary()
-    const id = setInterval(fetchSummary, 60_000) // Refresh summary every 60 seconds
+    const id = setInterval(fetchSummary, 3_000) // Refresh summary every 3 seconds
     return () => clearInterval(id)
   }, [API]) // Add API to dependency array if it could change, though unlikely for env var
 

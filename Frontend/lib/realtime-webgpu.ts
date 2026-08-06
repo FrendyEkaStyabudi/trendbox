@@ -403,6 +403,11 @@ export class BrowserInferenceEngine {
     const dimensions = output.dims.map(Number);
     const channels = dimensions[1];
     const candidates = dimensions[2];
+
+    if (!channels || !candidates || channels < 4 + classLabels.length) {
+      return [];
+    }
+
     const values = output.data as Float32Array;
     const detections: ObjectDetection[] = [];
 
@@ -443,11 +448,6 @@ export class BrowserInferenceEngine {
       });
     }
 
-    // Segmentation models append mask channels after their class scores. The
-    // parser intentionally reads only 4 + class count and ignores the masks.
-    if (channels < 4 + classLabels.length) {
-      throw new Error(`Invalid YOLO output: ${dimensions.join("x")}`);
-    }
     return nonMaximumSuppression(detections);
   }
 
@@ -572,16 +572,18 @@ export class BrowserInferenceEngine {
     return { label, confidence };
   }
 
-  private completeTrack(track: TrackState, now: number): CompletedDetection {
-    const emotion = this.dominantEmotion(track);
+  private completeTrack(track: TrackState, now: number, config?: BrowserInferenceConfig): CompletedDetection {
+    const emotion = (config?.emotion ?? true) ? this.dominantEmotion(track) : { label: "-", confidence: 0 };
+    const headObj = (config?.head ?? true) ? track.head : null;
+    const clothingObj = (config?.clothing ?? true) ? track.clothing : null;
     return {
       track_id: track.id,
       emotion: emotion.label === "-" ? null : emotion.label,
       emotion_confidence: emotion.confidence,
-      head: track.head?.label || null,
-      head_confidence: track.head?.confidence || 0,
-      clothing: track.clothing?.label || null,
-      clothing_confidence: track.clothing?.confidence || 0,
+      head: headObj?.label || null,
+      head_confidence: headObj?.confidence || 0,
+      clothing: clothingObj?.label || null,
+      clothing_confidence: clothingObj?.confidence || 0,
       duration: Math.max(0, (now - track.firstSeen) / 1000),
     };
   }
@@ -594,16 +596,14 @@ export class BrowserInferenceEngine {
     if (!config.head) this.cachedHeads = [];
     if (!config.clothing) this.cachedClothing = [];
 
-    if (
-      (this.headSession || this.clothingSession) &&
-      (this.frameCount === 1 || this.frameCount % YOLO_INTERVAL === 0)
-    ) {
+    // Stagger YOLO executions across different frames so heavy models never collide on a single frame
+    const shouldRunHead = config.head && Boolean(this.headSession) && (this.frameCount % YOLO_INTERVAL === 1);
+    const shouldRunClothing = config.clothing && Boolean(this.clothingSession) && (this.frameCount % YOLO_INTERVAL === 3);
+
+    if (shouldRunHead || shouldRunClothing) {
       const { tensor, transform } = this.createYoloTensor(video);
       try {
-        // Run the large models sequentially and immediately dispose every
-        // output tensor. Keeping outputs from previous frames leaks GPU/WASM
-        // memory until the runtime eventually throws "memory access out of bounds".
-        if (config.head && this.headSession) {
+        if (shouldRunHead && this.headSession) {
           const session = this.headSession;
           const outputs = await session.run({ [session.inputNames[0]]: tensor });
           try {
@@ -618,7 +618,7 @@ export class BrowserInferenceEngine {
             disposeTensors(outputs);
           }
         }
-        if (config.clothing && this.clothingSession) {
+        if (shouldRunClothing && this.clothingSession) {
           const session = this.clothingSession;
           const outputs = await session.run({ [session.inputNames[0]]: tensor });
           try {
@@ -701,7 +701,7 @@ export class BrowserInferenceEngine {
     const completed: CompletedDetection[] = [];
     for (const track of [...this.tracks.values()]) {
       if (now - track.lastSeen > TRACK_TTL_MS) {
-        completed.push(this.completeTrack(track, now));
+        completed.push(this.completeTrack(track, now, config));
         this.tracks.delete(track.id);
       }
     }
@@ -709,8 +709,8 @@ export class BrowserInferenceEngine {
     const processingMs = performance.now() - startedAt;
     return {
       people,
-      heads: this.cachedHeads,
-      clothing: this.cachedClothing,
+      heads: config.head ? this.cachedHeads : [],
+      clothing: config.clothing ? this.cachedClothing : [],
       completed,
       processingMs,
       fps: processingMs > 0 ? 1000 / processingMs : 0,
@@ -719,9 +719,9 @@ export class BrowserInferenceEngine {
     };
   }
 
-  flushTracks() {
+  flushTracks(config?: BrowserInferenceConfig) {
     const now = performance.now();
-    const completed = [...this.tracks.values()].map((track) => this.completeTrack(track, now));
+    const completed = [...this.tracks.values()].map((track) => this.completeTrack(track, now, config));
     this.tracks.clear();
     return completed;
   }
@@ -771,19 +771,11 @@ export function drawInferenceOverlay(
     context.lineWidth = 3;
     context.strokeRect(person.box.x, person.box.y, person.box.width, person.box.height);
     context.fillStyle = "#22c55e";
+    const emotionLabel = (person.emotion && person.emotion !== "-") ? ` ${person.emotion}` : "";
     context.fillText(
-      `ID:${person.id} ${person.emotion}`,
+      `ID:${person.id}${emotionLabel}`,
       person.box.x,
       Math.max(16, person.box.y - 22)
     );
   }
-
-  context.fillStyle = "rgba(0, 0, 0, 0.72)";
-  context.fillRect(8, 8, 330, 30);
-  context.fillStyle = "#4ade80";
-  context.fillText(
-    `Face:${result.people.length} Head:${result.heads.length} Clothes:${result.clothing.length} ${result.provider.toUpperCase()}`,
-    16,
-    29
-  );
 }

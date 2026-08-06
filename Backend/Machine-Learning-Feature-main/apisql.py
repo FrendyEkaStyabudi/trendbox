@@ -1,4 +1,4 @@
-﻿import cv2
+import cv2
 import numpy as np
 import tensorflow as tf
 import mediapipe as mp
@@ -186,10 +186,31 @@ def suppress_same_label_overlaps(detections, iou_threshold=SAME_LABEL_IOU_THRESH
     return kept
 
 
+UPPER_CLOTHING_LABELS = {'t-shirt', 'shirt', 'outer', 'sweater', 'blouse', 'kaos', 'kemeja'}
+LOWER_CLOTHING_LABELS = {'long_pants', 'shorts', 'skirt', 'celana panjang', 'celana pendek', 'rok'}
+HIJAB_CONFIDENCE_THRESHOLD = 0.78
+HAIR_CONFIDENCE_THRESHOLD = 0.25
+
 def keep_best_detection(detections):
     if not detections:
         return []
     return [max(detections, key=lambda item: item.get('conf') or 0.0)]
+
+def keep_best_per_category(detections):
+    if not detections:
+        return []
+    best_by_cat = {}
+    for d in detections:
+        label = d['label'].lower()
+        if label in UPPER_CLOTHING_LABELS:
+            cat = 'upper'
+        elif label in LOWER_CLOTHING_LABELS:
+            cat = 'lower'
+        else:
+            cat = label
+        if cat not in best_by_cat or (d.get('conf') or 0.0) > (best_by_cat[cat].get('conf') or 0.0):
+            best_by_cat[cat] = d
+    return list(best_by_cat.values())
 
 
 class Person:
@@ -201,6 +222,8 @@ class Person:
         self.saved = False
         self.head_data = {'label': '-', 'conf': 0.0}
         self.cloth_data = {'label': '-', 'conf': 0.0}
+        self.cloth_upper = {'label': '-', 'conf': 0.0}
+        self.cloth_lower = {'label': '-', 'conf': 0.0}
         self.color = tuple(np.random.randint(50, 255, 3).tolist())
 
     def update(self, loc):
@@ -350,7 +373,17 @@ class EmotionTracker:
                     emit_log("info", f"Head inserted: {packet['head_label']}", sid=self.session_id)
 
                 # Insert Clothing HANYA jika ada dan allowed
-                if packet['cloth_label'] is not None:
+                if packet.get('clothing_items'):
+                    for c_label, c_conf in packet['clothing_items']:
+                        cur.execute(
+                            """
+                            INSERT INTO clothing_track (label, confidence, timestamp, source)
+                            VALUES (%s, %s, %s, %s)
+                            """,
+                            (c_label, c_conf, packet['timestamp'], packet['uid'])
+                        )
+                        emit_log("info", f"Clothing inserted: {c_label}", sid=self.session_id)
+                elif packet.get('cloth_label') is not None:
                     cur.execute(
                         """
                         INSERT INTO clothing_track (label, confidence, timestamp, source)
@@ -376,17 +409,18 @@ class EmotionTracker:
 
     def save_person(self, p: Person):
         if not db_pool or not self.config.get('db_save', True):
-            print(f"âš  [DB] Skipping save - db_pool={db_pool is not None}, db_save={self.config.get('db_save')}")
+            print(f"⚠️ [DB] Skipping save - db_pool={db_pool is not None}, db_save={self.config.get('db_save')}")
             return
 
         dom, conf = p.get_dominant_emotion()
 
         # LOGGING
-        print(f"ðŸ’¾ [SAVE] Attempting to save Person ID {p.id}")
+        print(f"💾 [SAVE] Attempting to save Person ID {p.id}")
         print(f"   - Emotion history: {p.emotion_history}")
         print(f"   - Dominant: {dom}")
         print(f"   - Head: {p.head_data}")
-        print(f"   - Clothes: {p.cloth_data}")
+        print(f"   - Clothes Upper: {p.cloth_upper}")
+        print(f"   - Clothes Lower: {p.cloth_lower}")
 
         # Siapkan nilai aman: None bila fitur dimatikan / tidak allowed / tidak ada
         if self.config.get('head', True):
@@ -396,9 +430,17 @@ class EmotionTracker:
             head_label = None
             head_conf = None
 
+        clothing_items = []
         if self.config.get('clothing', True):
-            cloth_label = p.cloth_data['label'] if p.cloth_data['label'] in ALLOWED_CLOTHES else None
-            cloth_conf  = float(p.cloth_data['conf']) if cloth_label is not None else None
+            if p.cloth_upper['label'] in ALLOWED_CLOTHES:
+                clothing_items.append((p.cloth_upper['label'], float(p.cloth_upper['conf'])))
+            if p.cloth_lower['label'] in ALLOWED_CLOTHES and p.cloth_lower['label'] != p.cloth_upper['label']:
+                clothing_items.append((p.cloth_lower['label'], float(p.cloth_lower['conf'])))
+            if not clothing_items and p.cloth_data['label'] in ALLOWED_CLOTHES:
+                clothing_items.append((p.cloth_data['label'], float(p.cloth_data['conf'])))
+
+            cloth_label = clothing_items[0][0] if clothing_items else None
+            cloth_conf = clothing_items[0][1] if clothing_items else None
         else:
             cloth_label = None
             cloth_conf = None
@@ -415,11 +457,13 @@ class EmotionTracker:
             'head_label': head_label,
             'head_conf': head_conf,
             'cloth_label': cloth_label,
-            'cloth_conf': cloth_conf
+            'cloth_conf': cloth_conf,
+            'clothing_items': clothing_items
         }
 
-        print(f"   ðŸ“¤ Queuing packet: {data_packet}")
-        self.db_queue.put(data_packet)
+        if self.config.get('db_save', True):
+            print(f"   📦 Queuing packet: {data_packet}")
+            self.db_queue.put(data_packet)
         p.saved = True
 
     def get_people_json(self):
@@ -494,14 +538,14 @@ class EmotionTracker:
         try:
             frame = cv2.resize(frame, (TARGET_WIDTH, target_h))
         except Exception as e:
-            print(f"âŒ [Resize Error] {e}")
+            print(f"❌ [Resize Error] {e}")
             return np.zeros((480, 640, 3), dtype=np.uint8)
         
         # Konversi ke RGB dengan error handling
         try:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         except Exception as e:
-            print(f"âŒ [Color Conversion Error] {e}")
+            print(f"⚠️ [Color Conversion Error] {e}")
             return frame
 
         emotion_enabled = self.config.get('emotion', True)
@@ -513,70 +557,78 @@ class EmotionTracker:
         if not clothing_enabled:
             self.cache_clothes = []
 
-        # YOLO EVERY N FRAMES
-        if self.frame_count % YOLO_INTERVAL == 0:
+        # Stagger YOLO models across different frames to eliminate frame freezes
+        should_run_head = head_enabled and ('yolo_head' in GLOBAL_MODELS) and (self.frame_count % YOLO_INTERVAL == 1)
+        should_run_clothes = clothing_enabled and ('yolo_clothes' in GLOBAL_MODELS) and (self.frame_count % YOLO_INTERVAL == 3)
+
+        # HEAD
+        if should_run_head:
             self.cache_heads = []
+            try:
+                head_detections = []
+                yolo_args = {
+                    'verbose': False,
+                    'conf': YOLO_CONFIDENCE,
+                    'iou': SAME_LABEL_IOU_THRESHOLD,
+                    'imgsz': YOLO_IMGSZ,
+                }
+                if YOLO_DEVICE != 'auto':
+                    yolo_args['device'] = YOLO_DEVICE
+                if YOLO_HALF:
+                    yolo_args['half'] = True
+                res = GLOBAL_MODELS['yolo_head'](frame, **yolo_args)
+                for r in res:
+                    for box in r.boxes:
+                        raw_label = GLOBAL_MODELS['yolo_head'].names[int(box.cls[0])]
+                        trans_label = translate_head(raw_label)
+
+                        if trans_label in ALLOWED_HEAD:
+                            conf_val = float(box.conf[0])
+                            # Threshold khusus: Hijab dinaikkan ke 0.78 (78%), Hair diturunkan ke 0.25 (25%)
+                            if trans_label == 'hijab' and conf_val < HIJAB_CONFIDENCE_THRESHOLD:
+                                continue
+                            if trans_label == 'hair' and conf_val < HAIR_CONFIDENCE_THRESHOLD:
+                                continue
+                            head_detections.append({
+                                'box': box.xyxy[0].cpu().numpy().astype(int),
+                                'label': trans_label,
+                                'conf': conf_val
+                            })
+                self.cache_heads = keep_best_detection(head_detections)
+            except Exception as e:
+                print(f"⚠️ [YOLO Head Error] {e}")
+
+        # CLOTHING
+        if should_run_clothes:
             self.cache_clothes = []
+            try:
+                clothing_detections = []
+                yolo_args = {
+                    'verbose': False,
+                    'conf': YOLO_CONFIDENCE,
+                    'iou': SAME_LABEL_IOU_THRESHOLD,
+                    'imgsz': YOLO_IMGSZ,
+                }
+                if YOLO_DEVICE != 'auto':
+                    yolo_args['device'] = YOLO_DEVICE
+                if YOLO_HALF:
+                    yolo_args['half'] = True
+                res = GLOBAL_MODELS['yolo_clothes'](frame, **yolo_args)
+                for r in res:
+                    for box in r.boxes:
+                        raw_label = GLOBAL_MODELS['yolo_clothes'].names[int(box.cls[0])]
+                        trans_label = translate_clothes(raw_label)
 
-            # HEAD
-            if head_enabled and 'yolo_head' in GLOBAL_MODELS:
-                try:
-                    head_detections = []
-                    yolo_args = {
-                        'verbose': False,
-                        'conf': YOLO_CONFIDENCE,
-                        'iou': SAME_LABEL_IOU_THRESHOLD,
-                        'imgsz': YOLO_IMGSZ,
-                    }
-                    if YOLO_DEVICE != 'auto':
-                        yolo_args['device'] = YOLO_DEVICE
-                    if YOLO_HALF:
-                        yolo_args['half'] = True
-                    res = GLOBAL_MODELS['yolo_head'](frame, **yolo_args)
-                    for r in res:
-                        for box in r.boxes:
-                            raw_label = GLOBAL_MODELS['yolo_head'].names[int(box.cls[0])]
-                            trans_label = translate_head(raw_label)
-
-                            if trans_label in ALLOWED_HEAD:
-                                head_detections.append({
-                                    'box': box.xyxy[0].cpu().numpy().astype(int),
-                                    'label': trans_label,
-                                    'conf': float(box.conf[0])
-                                })
-                    self.cache_heads = keep_best_detection(head_detections)
-                except Exception as e:
-                    print(f"âš ï¸ [YOLO Head Error] {e}")
-
-            # CLOTHING
-            if clothing_enabled and 'yolo_clothes' in GLOBAL_MODELS:
-                try:
-                    clothing_detections = []
-                    yolo_args = {
-                        'verbose': False,
-                        'conf': YOLO_CONFIDENCE,
-                        'iou': SAME_LABEL_IOU_THRESHOLD,
-                        'imgsz': YOLO_IMGSZ,
-                    }
-                    if YOLO_DEVICE != 'auto':
-                        yolo_args['device'] = YOLO_DEVICE
-                    if YOLO_HALF:
-                        yolo_args['half'] = True
-                    res = GLOBAL_MODELS['yolo_clothes'](frame, **yolo_args)
-                    for r in res:
-                        for box in r.boxes:
-                            raw_label = GLOBAL_MODELS['yolo_clothes'].names[int(box.cls[0])]
-                            trans_label = translate_clothes(raw_label)
-
-                            if trans_label in ALLOWED_CLOTHES:
-                                clothing_detections.append({
-                                    'box': box.xyxy[0].cpu().numpy().astype(int),
-                                    'label': trans_label,
-                                    'conf': float(box.conf[0])
-                                })
-                    self.cache_clothes = keep_best_detection(clothing_detections)
-                except Exception as e:
-                    print(f"âš ï¸ [YOLO Clothes Error] {e}")
+                        if trans_label in ALLOWED_CLOTHES:
+                            clothing_detections.append({
+                                'box': box.xyxy[0].cpu().numpy().astype(int),
+                                'label': trans_label,
+                                'conf': float(box.conf[0])
+                            })
+                # Menggunakan keep_best_per_category agar Atasan dan Bawahan MUNCUL BERSAMAAN
+                self.cache_clothes = keep_best_per_category(clothing_detections)
+            except Exception as e:
+                    print(f"⚠️ [YOLO Clothes Error] {e}")
 
         # DRAW YOLO VISUAL
         if head_enabled:
@@ -728,20 +780,41 @@ class EmotionTracker:
                         if get_iou(face_rect, hbox['box']) > 0:
                             matched.head_data = hbox
 
-                # CLOTHES
+                # CLOTHES (Matching Atasan & Bawahan Bersamaan)
                 if clothing_enabled:
                     fx, fy = center
-                    min_v_dist = 1000
-                    best_c = None
+                    best_upper = None
+                    min_upper_dist = 1000
+                    best_lower = None
+                    min_lower_dist = 1000
+
                     for cbox in self.cache_clothes:
                         cx = (cbox['box'][0] + cbox['box'][2]) // 2
                         cy = (cbox['box'][1] + cbox['box'][3]) // 2
-                        if cy > fy and abs(cx - fx) < w_box * 1.5:
-                            if (cy - fy) < min_v_dist:
-                                min_v_dist = cy - fy
-                                best_c = cbox
-                    if best_c is not None:
-                        matched.cloth_data = best_c
+                        label_lower = cbox['label'].lower()
+
+                        if cy > fy and abs(cx - fx) < w_box * 2.0:
+                            v_dist = cy - fy
+                            if label_lower in UPPER_CLOTHING_LABELS:
+                                if v_dist < min_upper_dist:
+                                    min_upper_dist = v_dist
+                                    best_upper = cbox
+                            elif label_lower in LOWER_CLOTHING_LABELS:
+                                if v_dist < min_lower_dist:
+                                    min_lower_dist = v_dist
+                                    best_lower = cbox
+                            else:
+                                if v_dist < min_upper_dist:
+                                    min_upper_dist = v_dist
+                                    best_upper = cbox
+
+                    if best_upper is not None:
+                        matched.cloth_upper = best_upper
+                        matched.cloth_data = best_upper
+                    if best_lower is not None:
+                        matched.cloth_lower = best_lower
+                        if best_upper is None:
+                            matched.cloth_data = best_lower
 
                 # DRAW PERSON BOX
                 faces_drawn += 1
@@ -750,16 +823,8 @@ class EmotionTracker:
                 # TEXT EMOTION (LOGIKA TAMPILAN)
                 display_text = "-"
                 
-                # Ambil emosi dominan terbaru (untuk tampilan real-time di atas kepala)
-                # Kita bisa pakai raw_label langsung, atau pakai dominan dari history
-                
-                # Opsi 1: Pakai Raw Label langsung (lebih responsif)
                 if emotion_enabled and raw_label in DISPLAY_EMOTIONS:
                     display_text = raw_label
-                
-                # Opsi 2: Pakai Dominan (lebih stabil, tapi bisa lag)
-                # dom, _ = matched.get_dominant_emotion()
-                # if dom is not None: display_text = dom
 
                 cv2.putText(
                     frame,
@@ -772,21 +837,33 @@ class EmotionTracker:
                 )
 
                 head_label = matched.head_data['label'] if head_enabled else '-'
-                cloth_label = matched.cloth_data['label'] if clothing_enabled else '-'
-                attr_txt = f"H:{head_label}   C:{cloth_label}"
-                cv2.putText(
-                    frame,
-                    attr_txt,
-                    (x, y + h_box + 15),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4,
-                    (255, 255, 255),
-                    1
-                )
-
-        status_text = f"Face:{faces_drawn} Head:{len(self.cache_heads) if head_enabled else 0} Clothes:{len(self.cache_clothes) if clothing_enabled else 0}"
-        cv2.rectangle(frame, (8, 8), (310, 38), (0, 0, 0), -1)
-        cv2.putText(frame, status_text, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                
+                clothes_parts = []
+                if clothing_enabled:
+                    if matched.cloth_upper['label'] != '-':
+                        clothes_parts.append(matched.cloth_upper['label'])
+                    if matched.cloth_lower['label'] != '-':
+                        clothes_parts.append(matched.cloth_lower['label'])
+                    if not clothes_parts and matched.cloth_data['label'] != '-':
+                        clothes_parts.append(matched.cloth_data['label'])
+                
+                attr_parts = []
+                if head_enabled and head_label != '-':
+                    attr_parts.append(f"H:{head_label}")
+                if clothing_enabled and cloth_label != '-':
+                    attr_parts.append(f"C:{cloth_label}")
+                
+                if attr_parts:
+                    attr_txt = "   ".join(attr_parts)
+                    cv2.putText(
+                        frame,
+                        attr_txt,
+                        (x, y + h_box + 15),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        (255, 255, 255),
+                        1
+                    )
 
         # Cleanup
         now = datetime.now()

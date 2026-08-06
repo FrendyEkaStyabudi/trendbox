@@ -10,3 +10,5 @@
 **/*.py[cod]
 Backend/logs/
 Backend/API-NLP-CHATBOT-QUERY-GENERATOR-main/runtime_config.json
+*.exe
+cloud-sql-proxy.exe

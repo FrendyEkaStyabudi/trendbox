@@ -1,4 +1,4 @@
-﻿from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request
 import mysql.connector
 import pandas as pd
 from flask_cors import CORS
@@ -21,11 +21,12 @@ origins_env = os.getenv("FRONTEND_ORIGINS", "*")
 origins = "*" if origins_env.strip() == "*" else [origin.strip() for origin in origins_env.split(",") if origin.strip()]
 CORS(app, supports_credentials=True, origins=origins)
 
-# --- Database Configuration ---
+# --- Database Configuration & Pooling ---
 DB_CONFIG = {
     'user': os.getenv('DB_USER', 'trendbox-app'),
     'password': os.getenv('DB_PASSWORD', ''),
     'database': os.getenv('DB_DATABASE', os.getenv('DB_NAME', 'trendbox')),
+    'connect_timeout': 3,
 }
 
 instance_connection_name = os.getenv('INSTANCE_CONNECTION_NAME', '').strip()
@@ -34,6 +35,24 @@ if instance_connection_name:
 else:
     DB_CONFIG['host'] = os.getenv('DB_HOST', '127.0.0.1')
     DB_CONFIG['port'] = int(os.getenv('DB_PORT', '3306'))
+
+from mysql.connector import pooling
+db_pool = None
+try:
+    db_pool = pooling.MySQLConnectionPool(pool_name="trendbox_pool", pool_size=5, **DB_CONFIG)
+    print("✅ MySQL Connection Pool initialized")
+except Exception as p_err:
+    print(f"⚠️ MySQL Pool init defer: {p_err}")
+
+def get_db_connection():
+    global db_pool
+    try:
+        if db_pool:
+            return db_pool.get_connection()
+        return mysql.connector.connect(**DB_CONFIG)
+    except mysql.connector.Error as err:
+        app.logger.error(f"Error connecting to database: {err}.")
+        raise
 
 # --- Emotion Forecasting Model Configuration ---
 MODELS = {}
@@ -294,14 +313,14 @@ def db_summary():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
-        cursor.execute("SELECT COUNT(*) AS count FROM emotion_track WHERE DATE(timestamp) = CURDATE()")
+        cursor.execute("SELECT COUNT(*) AS count FROM emotion_track WHERE timestamp >= CURDATE()")
         detected_faces_row = cursor.fetchone()
         detected_faces = detected_faces_row['count'] if detected_faces_row else 0
 
         cursor.execute("""
             SELECT emotion
             FROM emotion_track
-            WHERE DATE(timestamp) = CURDATE()
+            WHERE timestamp >= CURDATE()
             GROUP BY emotion
             ORDER BY COUNT(*) DESC
             LIMIT 1
@@ -314,7 +333,7 @@ def db_summary():
             cursor.execute(f"""
                 SELECT label, COUNT(*) AS count
                 FROM {table_name}
-                WHERE DATE(timestamp) = CURDATE()
+                WHERE timestamp >= CURDATE()
                 GROUP BY label
                 ORDER BY count DESC, label ASC
             """)
@@ -377,70 +396,56 @@ def db_summary():
         return jsonify({
             'detected_faces': detected_faces,
             'dominant_emotion': dominant_emotion,
-            'weekly_changes': changes, # Ini adalah persentase perubahan
+            'weekly_changes': changes,
             'attribute_summary': attribute_summary,
         })
-    except mysql.connector.Error as db_err:
-        app.logger.error(f"Database error in /api/summary (DB): {db_err}", exc_info=True)
-        return jsonify({"error": "Database error", "message": str(db_err)}), 500
-    except Exception as e:
-        app.logger.error(f"An unexpected error occurred in /api/summary (DB): {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred", "message": str(e)}), 500
+    except Exception as db_err:
+        app.logger.error(f"Database unavailable for /api/summary: {db_err}")
+        return jsonify({
+            'detected_faces': 0,
+            'dominant_emotion': 'N/A',
+            'weekly_changes': {},
+            'attribute_summary': {
+                'head': {'total': 0, 'dominant': 'N/A', 'distribution': []},
+                'clothing': {'total': 0, 'dominant': 'N/A', 'distribution': []}
+            }
+        })
     finally:
         if conn and conn.is_connected():
             conn.close()
-            app.logger.info("--- Database connection closed for /api/summary (DB) ---")
 
 @app.route('/api/logs', methods=['GET', 'OPTIONS'])
 def db_logs():
     if request.method == 'OPTIONS':
-        app.logger.info("--- /api/logs (DB) OPTIONS request hit ---")
         return '', 200
 
     conn = None
     try:
-        app.logger.info("--- /api/logs (DB) GET request hit ---")
         conn = get_db_connection()
-        
         query = """
             SELECT timestamp, user_id AS person, emotion, confidence
             FROM emotion_track
             ORDER BY timestamp DESC LIMIT 50
         """
         df = pd.read_sql(query, conn)
-        app.logger.info(f"--- pd.read_sql for /api/logs (DB) executed, df has {len(df)} rows ---")
-                
         if not df.empty:
-            # Konversi timestamp ke string ISO format agar aman untuk JSON
             df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%dT%H:%M:%S')
-            # Ganti NaN dengan None (null di JSON) jika ada
-            df.fillna(value=pd.NA, inplace=True) # pd.NA lebih modern, tapi None juga oke
+            df.fillna(value=pd.NA, inplace=True)
             records = df.to_dict(orient='records')
-            # Iterasi untuk memastikan None jika pd.NA
-            cleaned_records = []
-            for record in records:
-                cleaned_record = {k: (None if pd.isna(v) else v) for k, v in record.items()}
-                cleaned_records.append(cleaned_record)
+            cleaned_records = [{k: (None if pd.isna(v) else v) for k, v in record.items()} for record in records]
             return jsonify(cleaned_records)
         else:
-            app.logger.info("--- /api/logs (DB) returning empty list as DataFrame is empty ---")
             return jsonify([]) 
-                
-    except mysql.connector.Error as db_err:
-        app.logger.error(f"Database error in /api/logs (DB): {db_err}", exc_info=True)
-        return jsonify({"error": "Database error", "message": str(db_err)}), 500
-    except Exception as e:
-        app.logger.error(f"An unexpected error occurred in /api/logs (DB): {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred", "message": str(e)}), 500
+    except Exception as db_err:
+        app.logger.error(f"Database unavailable for /api/logs: {db_err}")
+        return jsonify([])
     finally:
         if conn and conn.is_connected():
             conn.close()
-            app.logger.info("--- Database connection closed for /api/logs (DB) ---")
 
 @app.route('/api/distribution', methods=['GET', 'OPTIONS'])
 def db_distribution():
     if request.method == 'OPTIONS':
-        app.logger.info("--- /api/distribution (DB) OPTIONS request hit ---")
         return '', 200
 
     conn = None
@@ -448,20 +453,19 @@ def db_distribution():
         range_param = request.args.get('range', 'today')
         metric = request.args.get('metric', 'emotion').lower()
         table_name, category_column = get_analytics_source(metric)
-        app.logger.info(f"--- /api/distribution (DB) GET request hit with range: {range_param} ---")
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
         condition = ""
+        condition = ""
         if range_param == 'today':
-            condition = "DATE(timestamp) = CURDATE()"
+            condition = "timestamp >= CURDATE()"
         elif range_param == 'week':
-            condition = "YEARWEEK(timestamp, 1) = YEARWEEK(CURDATE(), 1)"
+            condition = "timestamp >= CURDATE() - INTERVAL 7 DAY"
         elif range_param == 'month':
-            condition = "YEAR(timestamp) = YEAR(CURDATE()) AND MONTH(timestamp) = MONTH(CURDATE())"
+            condition = "timestamp >= CURDATE() - INTERVAL 30 DAY"
         else:
-            app.logger.warning(f"Invalid 'range' parameter for /api/distribution (DB): {range_param}. Defaulting to 'today'.")
-            condition = "DATE(timestamp) = CURDATE()"
+            condition = "timestamp >= CURDATE()"
 
         query = f"""
             SELECT {category_column} AS category,
@@ -474,13 +478,23 @@ def db_distribution():
         """
         cursor.execute(query)
         data = cursor.fetchall()
+
+        if not data and range_param in ('month', 'week'):
+            fallback_query = f"""
+                SELECT {category_column} AS category,
+                       {category_column} AS emotion,
+                       {category_column} AS label,
+                       COUNT(*) AS count
+                FROM {table_name}
+                GROUP BY {category_column}
+            """
+            cursor.execute(fallback_query)
+            data = cursor.fetchall()
+
         return jsonify(data)
-    except mysql.connector.Error as db_err:
-        app.logger.error(f"Database error in /api/distribution (DB): {db_err}", exc_info=True)
-        return jsonify({"error": "Database error", "message": str(db_err)}), 500
-    except Exception as e:
-        app.logger.error(f"An unexpected error occurred in /api/distribution (DB): {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred", "message": str(e)}), 500
+    except Exception as db_err:
+        app.logger.error(f"Database unavailable for /api/distribution: {db_err}")
+        return jsonify([])
     finally:
         if conn and conn.is_connected():
             conn.close()
@@ -490,19 +504,17 @@ def db_distribution():
 @app.route('/api/trends/today', methods=['GET', 'OPTIONS'])
 def db_trends_today():
     if request.method == 'OPTIONS':
-        app.logger.info("--- /api/trends/today (DB) OPTIONS request hit ---")
         return '', 200
 
     conn = None
     try:
-        app.logger.info("--- /api/trends/today (DB) GET request hit ---")
         conn = get_db_connection()
         metric = request.args.get('metric', 'emotion').lower()
         table_name, category_column = get_analytics_source(metric)
         df = pd.read_sql(f"""
             SELECT {category_column} AS category, HOUR(timestamp) as hour, COUNT(*) as count
             FROM {table_name}
-            WHERE DATE(timestamp) = CURDATE()
+            WHERE timestamp >= CURDATE()
             GROUP BY {category_column}, hour
             ORDER BY hour
         """, conn)
@@ -511,26 +523,20 @@ def db_trends_today():
             for category, group in df.groupby('category'):
                 result[category] = {'hours': group['hour'].tolist(), 'counts': group['count'].tolist()}
         return jsonify(result)
-    except mysql.connector.Error as db_err:
-        app.logger.error(f"Database error in /api/trends/today (DB): {db_err}", exc_info=True)
-        return jsonify({"error": "Database error", "message": str(db_err)}), 500
-    except Exception as e:
-        app.logger.error(f"An unexpected error occurred in /api/trends/today (DB): {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred", "message": str(e)}), 500
+    except Exception as db_err:
+        app.logger.error(f"Database unavailable for /api/trends/today: {db_err}")
+        return jsonify({})
     finally:
         if conn and conn.is_connected():
             conn.close()
-            app.logger.info("--- Database connection closed for /api/trends/today (DB) ---")
 
 @app.route('/api/trends/weekly', methods=['GET', 'OPTIONS'])
 def db_trends_weekly():
     if request.method == 'OPTIONS':
-        app.logger.info("--- /api/trends/weekly (DB) OPTIONS request hit ---")
         return '', 200
 
     conn = None
     try:
-        app.logger.info("--- /api/trends/weekly (DB) GET request hit ---")
         conn = get_db_connection()
         metric = request.args.get('metric', 'emotion').lower()
         table_name, category_column = get_analytics_source(metric)
@@ -550,27 +556,20 @@ def db_trends_weekly():
             for category, group in df.groupby('category'):
                 result[category] = {'days': group['day_of_week'].tolist(), 'counts': group['count'].tolist()}
         return jsonify(result)
-    except mysql.connector.Error as db_err:
-        app.logger.error(f"Database error in /api/trends/weekly (DB): {db_err}", exc_info=True)
-        return jsonify({"error": "Database error", "message": str(db_err)}), 500
-    except Exception as e:
-        app.logger.error(f"An unexpected error occurred in /api/trends/weekly (DB): {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred", "message": str(e)}), 500
+    except Exception as db_err:
+        app.logger.error(f"Database unavailable for /api/trends/weekly: {db_err}")
+        return jsonify({})
     finally:
         if conn and conn.is_connected():
             conn.close()
-            app.logger.info("--- Database connection closed for /api/trends/weekly (DB) ---")
-
 
 @app.route('/api/trends', methods=['GET', 'OPTIONS'])
 def db_trends_all():
     if request.method == 'OPTIONS':
-        app.logger.info("--- /api/trends (DB) OPTIONS request hit ---")
         return '', 200
 
     conn = None
     try:
-        app.logger.info("--- /api/trends (DB) GET request hit ---")
         conn = get_db_connection()
         metric = request.args.get('metric', 'emotion').lower()
         table_name, category_column = get_analytics_source(metric)
@@ -582,20 +581,16 @@ def db_trends_all():
         """, conn)
         result = {}
         if not df.empty:
-            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d') # Format tanggal
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
             for category, group in df.groupby('category'):
                 result[category] = {'dates': group['date'].tolist(), 'counts': group['count'].tolist()}
         return jsonify(result)
-    except mysql.connector.Error as db_err:
-        app.logger.error(f"Database error in /api/trends (DB): {db_err}", exc_info=True)
-        return jsonify({"error": "Database error", "message": str(db_err)}), 500
-    except Exception as e:
-        app.logger.error(f"An unexpected error occurred in /api/trends (DB): {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred", "message": str(e)}), 500
+    except Exception as db_err:
+        app.logger.error(f"Database unavailable for /api/trends: {db_err}")
+        return jsonify({})
     finally:
         if conn and conn.is_connected():
             conn.close()
-            app.logger.info("--- Database connection closed for /api/trends (DB) ---")
 
 
 # Endpoint from original Emotion Forecasting API
@@ -1038,20 +1033,6 @@ def get_forecast_api_logs():
 
 
 if __name__ == '__main__':
-    # Add a simple test to ensure DB connection at startup (optional but good for dev)
-    print("Attempting initial DB connection test...")
-    try:
-        conn = get_db_connection()
-        if conn:
-            print("Initial DB connection successful!")
-            conn.close()
-        else:
-            # Ini seharusnya tidak terjadi jika get_db_connection() raise error atau return conn
-            print("Initial DB connection failed but no exception raised (conn is None). Check get_db_connection logic.")
-    except Exception as e:
-        print(f"Initial DB connection failed with error: {e}")
-
-    # host='0.0.0.0' agar bisa diakses dari jaringan lokal (misal, dari Next.js yang berjalan di WSL atau kontainer lain)
-    # debug=True akan mengaktifkan auto-reloader dan debugger Flask. Matikan di produksi.
-    app.run(debug=True, port=5000, host='0.0.0.0')
+    # Start Flask server immediately on 0.0.0.0:5000 without blocking startup
+    app.run(debug=False, port=5000, host='0.0.0.0', threaded=True)
 
