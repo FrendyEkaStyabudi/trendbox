@@ -402,7 +402,7 @@ if __name__ == "__main__":
     try:
         print(f"Connecting to {SERVER_URL}...")
         try:
-            sio.connect(SERVER_URL)
+            sio.connect(SERVER_URL, transports=['websocket', 'polling'])
         except Exception as e:
             print(f"SocketIO Connection Warning: {e}")
 
